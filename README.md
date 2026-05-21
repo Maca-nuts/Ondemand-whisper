@@ -1,6 +1,6 @@
 # Ondemand Whisper
 
-動画ページの URL から `.m3u8` の動画ストリームを取得し、動画をダウンロードしたあと、OpenAI Whisper で文字起こしして Markdown ファイルを作成するスクリプトです。
+動画ページの URL から `.m3u8` または `.mp4` の動画 URL を取得し、動画をダウンロードしたあと、OpenAI Whisper で文字起こしして Markdown ファイルを作成するスクリプトです。
 
 出力ファイルは Windows の `Downloads` に保存されます。
 

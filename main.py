@@ -3,6 +3,7 @@ import whisper
 
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 from yt_dlp import YoutubeDL
@@ -32,6 +33,18 @@ def find_downloaded_video(output_stem):
     if not downloaded_files:
         raise RuntimeError("ダウンロードしたファイルが見つかりませんでした。")
     return downloaded_files[0]
+
+
+def detect_video_source(url, content_type=""):
+    parsed_path = urlparse(url).path.lower()
+    normalized_content_type = content_type.lower()
+
+    if ".m3u8" in parsed_path or "mpegurl" in normalized_content_type:
+        return "m3u8"
+    if ".mp4" in parsed_path or "video/mp4" in normalized_content_type:
+        return "mp4"
+
+    return None
 
 
 print("cuda available:", torch.cuda.is_available())
@@ -70,45 +83,67 @@ DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 output_stem = f"airtime_{timestamp}"
 
-m3u8_url = None
+video_source_url = WATCH_URL
+video_source_type = detect_video_source(WATCH_URL)
 
 
 def handle_response(response):
-    global m3u8_url
+    global video_source_url, video_source_type
+    if video_source_type:
+        return
+
     url = response.url
-    if ".m3u8" in url and "mux.com" in url:
-        m3u8_url = url
+    source_type = detect_video_source(url, response.headers.get("content-type", ""))
+    if source_type:
+        video_source_url = url
+        video_source_type = source_type
 
 
-with sync_playwright() as p:
-    try:
-        browser = p.chromium.launch(headless=False)
-    except PlaywrightError as exc:
-        raise RuntimeError(
-            "Playwright Chromium failed to start. "
-            "Install the Linux browser dependencies in WSL with: "
-            "python3 -m playwright install-deps chromium"
-        ) from exc
+if not video_source_type:
+    with sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(headless=False)
+        except PlaywrightError as exc:
+            raise RuntimeError(
+                "Playwright Chromium failed to start. "
+                "Install the Linux browser dependencies in WSL with: "
+                "python3 -m playwright install-deps chromium"
+            ) from exc
 
-    context = browser.new_context()
-    page = context.new_page()
+        context = browser.new_context()
+        page = context.new_page()
 
-    page.on("response", handle_response)
-    page.goto(WATCH_URL, wait_until="networkidle")
+        page.on("response", handle_response)
+        page.goto(WATCH_URL, wait_until="networkidle")
 
-    try:
-        page.click("video")
-    except PlaywrightError:
-        pass
+        try:
+            page.click("video")
+        except PlaywrightError:
+            pass
 
-    page.wait_for_timeout(10000)
-    browser.close()
+        page.wait_for_timeout(10000)
 
-if not m3u8_url:
-    raise RuntimeError("m3u8 URLが見つかりませんでした。")
+        if not video_source_type:
+            try:
+                video_urls = page.locator("video").evaluate_all(
+                    "(videos) => videos.map((video) => video.currentSrc || video.src).filter(Boolean)"
+                )
+                for video_url in video_urls:
+                    source_type = detect_video_source(video_url)
+                    if source_type:
+                        video_source_url = video_url
+                        video_source_type = source_type
+                        break
+            except PlaywrightError:
+                pass
 
-print("m3u8 URLを取得しました:")
-print(m3u8_url)
+        browser.close()
+
+if not video_source_type:
+    raise RuntimeError("m3u8 / mp4 URLが見つかりませんでした。")
+
+print(f"{video_source_type} URLを取得しました:")
+print(video_source_url)
 
 ydl_opts = {
     "outtmpl": str(DOWNLOAD_DIR / f"{output_stem}.%(ext)s"),
@@ -119,7 +154,7 @@ ydl_opts = {
 }
 
 with YoutubeDL(ydl_opts) as ydl:
-    ydl.download([m3u8_url])
+    ydl.download([video_source_url])
 
 video_path = find_downloaded_video(output_stem)
 
